@@ -1,0 +1,104 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId}
+    // Fields:
+    //   - email: string (required)
+    //   - displayName: string (optional)
+    //   - photoURL: string (optional)
+    //   - role: string (required, enum: ['admin', 'user'])
+    //
+    // Collection: analyses
+    // Document ID: {analysisId}
+    // Fields:
+    //   - userId: string (required) - UID of the owner
+    //   - fileName: string (required)
+    //   - timestamp: string (required, ISO 8601)
+    //   - summary: string (required, max 5000 chars)
+    //   - geologicalContext: string (optional, max 2000 chars)
+    //   - components: list (required, max 50 items)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "rajamuhammadyasinkhan2019@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string && dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['email', 'role']) &&
+             data.keys().hasOnly(['email', 'displayName', 'photoURL', 'role']) &&
+             isValidEmail(data.email) &&
+             data.role in ['admin', 'user'];
+    }
+
+    function isValidAnalysis(data) {
+      return data.keys().hasAll(['userId', 'fileName', 'timestamp', 'summary', 'components']) &&
+             data.keys().hasOnly(['userId', 'fileName', 'timestamp', 'summary', 'geologicalContext', 'components']) &&
+             data.userId is string &&
+             data.fileName is string && data.fileName.size() < 255 &&
+             isValidDateString(data.timestamp) &&
+             data.summary is string && data.summary.size() < 10000 &&
+             (!('geologicalContext' in data) || (data.geologicalContext is string && data.geologicalContext.size() < 5000)) &&
+             data.components is list && data.components.size() <= 50;
+    }
+
+    // ===============================================================
+    // Match Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isAuthenticated() && isValidUser(request.resource.data) && 
+                    ((isOwner(userId) && request.resource.data.role == 'user') || isAdmin());
+      allow update: if isAuthenticated() && isValidUser(request.resource.data) && 
+                    ((isOwner(userId) && request.resource.data.role == resource.data.role) || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    match /analyses/{analysisId} {
+      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidAnalysis(request.resource.data) && 
+                    (request.resource.data.userId == request.auth.uid || isAdmin());
+      allow update: if isAuthenticated() && isValidAnalysis(request.resource.data) && 
+                    (resource.data.userId == request.auth.uid || isAdmin()) &&
+                    request.resource.data.userId == resource.data.userId; // Cannot change owner
+      allow delete: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+    }
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "entities": {
+    "Analysis": {
+      "title": "Analysis",
+      "description": "A geological analysis of a photomicrograph.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "The UID of the user who performed the analysis." },
+        "fileName": { "type": "string", "description": "Original filename of the image." },
+        "timestamp": { "type": "string", "format": "date-time", "description": "When the analysis was performed." },
+        "summary": { "type": "string", "description": "AI-generated summary of the sample." },
+        "geologicalContext": { "type": "string", "description": "AI-generated geological context." },
+        "components": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "type": { "type": "string" },
+              "percentage": { "type": "number" },
+              "description": { "type": "string" },
+              "labelPosition": {
+                "type": "object",
+                "properties": {
+                  "x": { "type": "number" },
+                  "y": { "type": "number" }
+                }
+              }
+            }
+          }
+        }
+      },
+      "required": ["userId", "fileName", "timestamp", "summary", "components"]
+    },
+    "User": {
+      "title": "User",
+      "description": "User profile information.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "user"] }
+      },
+      "required": ["email"]
+    }
+  },
+  "firestore": {
+    "/analyses/{analysisId}": {
+      "schema": "Analysis",
+      "description": "Collection of geological analyses."
+    },
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile documents."
+    }
+  }
+}

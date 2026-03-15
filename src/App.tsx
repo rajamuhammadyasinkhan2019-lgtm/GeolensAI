@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { 
   Upload, 
   FileImage, 
@@ -11,7 +11,11 @@ import {
   Trash2,
   CheckCircle2,
   AlertCircle,
-  Maximize2
+  Maximize2,
+  LogIn,
+  LogOut,
+  History,
+  User as UserIcon
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
@@ -30,6 +34,26 @@ import {
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { analyzePhotomicrograph, type AnalysisResult, type GeologyComponent } from './services/geminiService';
+import { auth, db, OperationType, handleFirestoreError } from './firebase';
+import { 
+  signInWithPopup, 
+  GoogleAuthProvider, 
+  onAuthStateChanged, 
+  signOut, 
+  User 
+} from 'firebase/auth';
+import { 
+  collection, 
+  addDoc, 
+  query, 
+  where, 
+  orderBy, 
+  onSnapshot,
+  doc,
+  setDoc,
+  getDoc,
+  Timestamp
+} from 'firebase/firestore';
 
 // Utility for tailwind classes
 function cn(...inputs: ClassValue[]) {
@@ -45,12 +69,94 @@ interface AnalyzedImage {
   error?: string;
 }
 
+interface SavedAnalysis extends AnalysisResult {
+  id: string;
+  userId: string;
+  fileName: string;
+  timestamp: string;
+}
+
 const COLORS = ['#4D7C0F', '#15803D', '#166534', '#065F46', '#064E3B', '#365314', '#14532D'];
 
 export default function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
   const [images, setImages] = useState<AnalyzedImage[]>([]);
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
+  const [history, setHistory] = useState<SavedAnalysis[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Auth Listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      setUser(currentUser);
+      setIsAuthReady(true);
+      
+      if (currentUser) {
+        // Sync user profile
+        const userRef = doc(db, 'users', currentUser.uid);
+        try {
+          const userDoc = await getDoc(userRef);
+          if (!userDoc.exists()) {
+            await setDoc(userRef, {
+              email: currentUser.email,
+              displayName: currentUser.displayName,
+              photoURL: currentUser.photoURL,
+              role: 'user'
+            });
+          }
+        } catch (error) {
+          console.error("Error syncing user profile:", error);
+        }
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // History Listener
+  useEffect(() => {
+    if (!user || !isAuthReady) {
+      setHistory([]);
+      return;
+    }
+
+    const q = query(
+      collection(db, 'analyses'),
+      where('userId', '==', user.uid),
+      orderBy('timestamp', 'desc')
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const docs = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as SavedAnalysis[];
+      setHistory(docs);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'analyses');
+    });
+
+    return () => unsubscribe();
+  }, [user, isAuthReady]);
+
+  const login = async () => {
+    try {
+      await signInWithPopup(auth, new GoogleAuthProvider());
+    } catch (error) {
+      console.error("Login failed:", error);
+    }
+  };
+
+  const logout = async () => {
+    try {
+      await signOut(auth);
+      setImages([]);
+      setSelectedImageId(null);
+    } catch (error) {
+      console.error("Logout failed:", error);
+    }
+  };
 
   const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
@@ -97,6 +203,17 @@ export default function App() {
       
       const result = await analyzePhotomicrograph(base64, img.file.type);
       
+      // Save to Firestore if logged in
+      if (user) {
+        const analysisData = {
+          userId: user.uid,
+          fileName: img.file.name,
+          timestamp: new Date().toISOString(),
+          ...result
+        };
+        await addDoc(collection(db, 'analyses'), analysisData);
+      }
+      
       setImages(prev => prev.map(i => i.id === id ? { 
         ...i, 
         status: 'completed', 
@@ -121,6 +238,13 @@ export default function App() {
 
   const selectedImage = images.find(img => img.id === selectedImageId);
 
+  if (!isAuthReady) {
+    return (
+      <div className="min-h-screen bg-[#1A1C1E] flex items-center justify-center">
+        <Loader2 className="w-12 h-12 text-lime-500 animate-spin" />
+      </div>
+    );
+  }
   return (
     <div className="min-h-screen bg-[#1A1C1E] text-stone-200 font-sans selection:bg-lime-900 selection:text-lime-100">
       {/* Header */}
@@ -137,6 +261,40 @@ export default function App() {
           </div>
           
           <div className="flex items-center gap-4">
+            {user ? (
+              <div className="flex items-center gap-4">
+                <button 
+                  onClick={() => setShowHistory(!showHistory)}
+                  className={cn(
+                    "p-2 rounded-full transition-colors",
+                    showHistory ? "bg-lime-900/30 text-lime-500" : "hover:bg-stone-800 text-stone-400"
+                  )}
+                  title="Analysis History"
+                >
+                  <History size={20} />
+                </button>
+                <div className="flex items-center gap-2 bg-stone-800 px-3 py-1.5 rounded-full border border-stone-700">
+                  {user.photoURL ? (
+                    <img src={user.photoURL} alt="" className="w-6 h-6 rounded-full" />
+                  ) : (
+                    <UserIcon size={14} className="text-stone-400" />
+                  )}
+                  <span className="text-xs font-medium text-stone-300 max-w-[100px] truncate">{user.displayName || user.email}</span>
+                  <button onClick={logout} className="ml-2 p-1 hover:text-red-500 transition-colors">
+                    <LogOut size={14} />
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button 
+                onClick={login}
+                className="flex items-center gap-2 px-4 py-2 bg-stone-800 hover:bg-stone-700 rounded-full text-sm font-medium transition-colors border border-stone-700"
+              >
+                <LogIn size={16} />
+                <span>Sign In</span>
+              </button>
+            )}
+            <div className="w-px h-6 bg-stone-800 mx-1" />
             <button 
               onClick={() => fileInputRef.current?.click()}
               className="flex items-center gap-2 px-4 py-2 bg-stone-800 hover:bg-stone-700 rounded-full text-sm font-medium transition-colors border border-stone-700"
@@ -166,69 +324,121 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
-        {/* Sidebar: Batch List */}
+        {/* Sidebar: Batch List or History */}
         <div className="lg:col-span-3 space-y-4">
           <div className="flex items-center justify-between mb-2">
-            <h2 className="text-xs font-bold uppercase tracking-widest text-stone-500">Batch Queue</h2>
-            <span className="text-xs bg-stone-800 px-2 py-0.5 rounded-full text-stone-400">{images.length}</span>
+            <h2 className="text-xs font-bold uppercase tracking-widest text-stone-500">
+              {showHistory ? 'Analysis History' : 'Batch Queue'}
+            </h2>
+            <span className="text-xs bg-stone-800 px-2 py-0.5 rounded-full text-stone-400">
+              {showHistory ? history.length : images.length}
+            </span>
           </div>
           
           <div className="space-y-2 max-h-[calc(100vh-200px)] overflow-y-auto pr-2 custom-scrollbar">
-            {images.length === 0 ? (
-              <div 
-                onClick={() => fileInputRef.current?.click()}
-                className="border-2 border-dashed border-stone-800 rounded-2xl p-8 flex flex-col items-center justify-center text-center cursor-pointer hover:border-stone-700 hover:bg-stone-800/30 transition-all group"
-              >
-                <div className="w-12 h-12 rounded-full bg-stone-800 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
-                  <Upload className="text-stone-500" />
+            {showHistory ? (
+              history.length === 0 ? (
+                <div className="text-center py-12 text-stone-600">
+                  <History size={32} className="mx-auto mb-4 opacity-20" />
+                  <p className="text-xs uppercase tracking-widest font-bold">No history found</p>
                 </div>
-                <p className="text-sm text-stone-400 font-medium">Drop photomicrographs here</p>
-                <p className="text-[10px] text-stone-600 mt-1 uppercase tracking-tighter">Supports JPG, PNG, TIFF</p>
-              </div>
-            ) : (
-              images.map(img => (
-                <motion.div 
-                  layout
-                  key={img.id}
-                  onClick={() => setSelectedImageId(img.id)}
-                  className={cn(
-                    "group relative p-2 rounded-xl border transition-all cursor-pointer flex items-center gap-3",
-                    selectedImageId === img.id 
-                      ? "bg-stone-800 border-lime-700/50 shadow-lg" 
-                      : "bg-[#1A1C1E] border-stone-800 hover:border-stone-700"
-                  )}
-                >
-                  <div className="relative w-12 h-12 rounded-lg overflow-hidden flex-shrink-0 bg-stone-900">
-                    <img src={img.preview} alt="" className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity" />
-                    {img.status === 'analyzing' && (
-                      <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
-                        <Loader2 className="w-4 h-4 text-lime-500 animate-spin" />
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-medium truncate text-stone-300">{img.file.name}</p>
-                    <div className="flex items-center gap-1 mt-1">
-                      {img.status === 'completed' && <CheckCircle2 size={10} className="text-lime-500" />}
-                      {img.status === 'error' && <AlertCircle size={10} className="text-red-500" />}
-                      <span className={cn(
-                        "text-[10px] uppercase font-bold tracking-tighter",
-                        img.status === 'completed' ? "text-lime-500" : 
-                        img.status === 'error' ? "text-red-500" : 
-                        img.status === 'analyzing' ? "text-lime-400" : "text-stone-600"
-                      )}>
-                        {img.status}
-                      </span>
+              ) : (
+                history.map(item => (
+                  <div 
+                    key={item.id}
+                    onClick={() => {
+                      // Create a mock image object to show history details
+                      const mockImg: AnalyzedImage = {
+                        id: item.id,
+                        file: new File([], item.fileName),
+                        preview: 'https://picsum.photos/seed/geology/800/800', // Placeholder for history
+                        status: 'completed',
+                        result: item
+                      };
+                      // This is a simplification; in a real app we'd load the image from storage
+                      // For now, we'll just show the data
+                      setImages(prev => {
+                        if (prev.find(i => i.id === item.id)) return prev;
+                        return [...prev, mockImg];
+                      });
+                      setSelectedImageId(item.id);
+                      setShowHistory(false);
+                    }}
+                    className="group p-3 rounded-xl border border-stone-800 bg-stone-900/50 hover:border-lime-700/50 cursor-pointer transition-all"
+                  >
+                    <p className="text-xs font-bold text-stone-300 truncate">{item.fileName}</p>
+                    <p className="text-[10px] text-stone-500 mt-1">{new Date(item.timestamp).toLocaleDateString()}</p>
+                    <div className="flex gap-1 mt-2">
+                      {item.components.slice(0, 3).map((c, i) => (
+                        <div key={i} className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: COLORS[i % COLORS.length] }} />
+                      ))}
                     </div>
                   </div>
-                  <button 
-                    onClick={(e) => { e.stopPropagation(); removeImage(img.id); }}
-                    className="opacity-0 group-hover:opacity-100 p-1.5 hover:bg-red-900/20 hover:text-red-500 rounded-md transition-all"
+                ))
+              )
+            ) : (
+              images.length === 0 ? (
+                <div 
+                  onClick={() => fileInputRef.current?.click()}
+                  className="border-2 border-dashed border-stone-800 rounded-2xl p-8 flex flex-col items-center justify-center text-center cursor-pointer hover:border-stone-700 hover:bg-stone-800/30 transition-all group"
+                >
+                  <div className="w-12 h-12 rounded-full bg-stone-800 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                    <Upload className="text-stone-500" />
+                  </div>
+                  <p className="text-sm text-stone-400 font-medium">Drop photomicrographs here</p>
+                  <p className="text-[10px] text-stone-600 mt-1 uppercase tracking-tighter">Supports JPG, PNG, TIFF</p>
+                </div>
+              ) : (
+                images.map(img => (
+                  <motion.div 
+                    layout
+                    key={img.id}
+                    onClick={() => setSelectedImageId(img.id)}
+                    className={cn(
+                      "group relative p-2 rounded-xl border transition-all cursor-pointer flex items-center gap-3",
+                      selectedImageId === img.id 
+                        ? "bg-stone-800 border-lime-700/50 shadow-lg" 
+                        : "bg-[#1A1C1E] border-stone-800 hover:border-stone-700"
+                    )}
                   >
-                    <Trash2 size={14} />
-                  </button>
-                </motion.div>
-              ))
+                    <div className="relative w-12 h-12 rounded-lg overflow-hidden flex-shrink-0 bg-stone-900">
+                      {img.preview.startsWith('http') ? (
+                        <div className="w-full h-full flex items-center justify-center bg-stone-800">
+                          <FileImage size={20} className="text-stone-600" />
+                        </div>
+                      ) : (
+                        <img src={img.preview} alt="" className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity" />
+                      )}
+                      {img.status === 'analyzing' && (
+                        <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
+                          <Loader2 className="w-4 h-4 text-lime-500 animate-spin" />
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium truncate text-stone-300">{img.file.name}</p>
+                      <div className="flex items-center gap-1 mt-1">
+                        {img.status === 'completed' && <CheckCircle2 size={10} className="text-lime-500" />}
+                        {img.status === 'error' && <AlertCircle size={10} className="text-red-500" />}
+                        <span className={cn(
+                          "text-[10px] uppercase font-bold tracking-tighter",
+                          img.status === 'completed' ? "text-lime-500" : 
+                          img.status === 'error' ? "text-red-500" : 
+                          img.status === 'analyzing' ? "text-lime-400" : "text-stone-600"
+                        )}>
+                          {img.status}
+                        </span>
+                      </div>
+                    </div>
+                    <button 
+                      onClick={(e) => { e.stopPropagation(); removeImage(img.id); }}
+                      className="opacity-0 group-hover:opacity-100 p-1.5 hover:bg-red-900/20 hover:text-red-500 rounded-md transition-all"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </motion.div>
+                ))
+              )
             )}
           </div>
         </div>
