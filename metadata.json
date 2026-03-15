@@ -1,0 +1,5 @@
+{
+  "name": "GeoLens AI: Scientific Photomicrograph Analyzer",
+  "description": "A sophisticated scientific image analysis tool for geology. Identify minerals, rocks, pollen, and spores in photomicrographs with AI-powered labeling and volumetric percentage calculations.",
+  "requestFramePermissions": []
+}
