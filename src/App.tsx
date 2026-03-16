@@ -15,7 +15,10 @@ import {
   LogIn,
   LogOut,
   History,
-  User as UserIcon
+  User as UserIcon,
+  Search,
+  Mountain,
+  Gem
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
@@ -33,7 +36,14 @@ import {
 } from 'recharts';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { analyzePhotomicrograph, type AnalysisResult, type GeologyComponent } from './services/geminiService';
+import { 
+  analyzePhotomicrograph, 
+  identifyRockOrMineral,
+  type AnalysisResult, 
+  type GeologyComponent,
+  type IdentificationResult,
+  type Identification
+} from './services/geminiService';
 import { auth, db, OperationType, handleFirestoreError } from './firebase';
 import { 
   signInWithPopup, 
@@ -65,7 +75,9 @@ interface AnalyzedImage {
   file: File;
   preview: string;
   status: 'idle' | 'analyzing' | 'completed' | 'error';
+  mode: 'analysis' | 'identification';
   result?: AnalysisResult;
+  idResult?: IdentificationResult;
   error?: string;
 }
 
@@ -74,6 +86,8 @@ interface SavedAnalysis extends AnalysisResult {
   userId: string;
   fileName: string;
   timestamp: string;
+  mode: 'analysis' | 'identification';
+  idResult?: IdentificationResult;
 }
 
 const COLORS = ['#4D7C0F', '#15803D', '#166534', '#065F46', '#064E3B', '#365314', '#14532D'];
@@ -85,6 +99,7 @@ export default function App() {
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
   const [history, setHistory] = useState<SavedAnalysis[]>([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [activeMode, setActiveMode] = useState<'analysis' | 'identification'>('analysis');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Auth Listener
@@ -169,7 +184,8 @@ export default function App() {
       id: Math.random().toString(36).substr(2, 9),
       file,
       preview: URL.createObjectURL(file),
-      status: 'idle'
+      status: 'idle',
+      mode: activeMode
     }));
     setImages(prev => [...prev, ...newImages]);
     if (!selectedImageId && newImages.length > 0) {
@@ -201,7 +217,14 @@ export default function App() {
       });
       const base64 = await base64Promise;
       
-      const result = await analyzePhotomicrograph(base64, img.file.type);
+      let result: AnalysisResult | undefined;
+      let idResult: IdentificationResult | undefined;
+
+      if (img.mode === 'analysis') {
+        result = await analyzePhotomicrograph(base64, img.file.type);
+      } else {
+        idResult = await identifyRockOrMineral(base64, img.file.type);
+      }
       
       // Save to Firestore if logged in
       if (user) {
@@ -209,7 +232,9 @@ export default function App() {
           userId: user.uid,
           fileName: img.file.name,
           timestamp: new Date().toISOString(),
-          ...result
+          mode: img.mode,
+          ...(result ? result : {}),
+          ...(idResult ? { idResult } : {})
         };
         await addDoc(collection(db, 'analyses'), analysisData);
       }
@@ -217,7 +242,8 @@ export default function App() {
       setImages(prev => prev.map(i => i.id === id ? { 
         ...i, 
         status: 'completed', 
-        result 
+        result,
+        idResult
       } : i));
     } catch (err) {
       setImages(prev => prev.map(i => i.id === id ? { 
@@ -295,6 +321,31 @@ export default function App() {
               </button>
             )}
             <div className="w-px h-6 bg-stone-800 mx-1" />
+            
+            <div className="flex bg-stone-900 p-1 rounded-full border border-stone-800">
+              <button 
+                onClick={() => setActiveMode('analysis')}
+                className={cn(
+                  "px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-widest transition-all flex items-center gap-2",
+                  activeMode === 'analysis' ? "bg-lime-700 text-white" : "text-stone-500 hover:text-stone-300"
+                )}
+              >
+                <Microscope size={12} />
+                <span>Micro</span>
+              </button>
+              <button 
+                onClick={() => setActiveMode('identification')}
+                className={cn(
+                  "px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-widest transition-all flex items-center gap-2",
+                  activeMode === 'identification' ? "bg-lime-700 text-white" : "text-stone-500 hover:text-stone-300"
+                )}
+              >
+                <Mountain size={12} />
+                <span>Macro</span>
+              </button>
+            </div>
+
+            <div className="w-px h-6 bg-stone-800 mx-1" />
             <button 
               onClick={() => fileInputRef.current?.click()}
               className="flex items-center gap-2 px-4 py-2 bg-stone-800 hover:bg-stone-700 rounded-full text-sm font-medium transition-colors border border-stone-700"
@@ -353,7 +404,9 @@ export default function App() {
                         file: new File([], item.fileName),
                         preview: 'https://picsum.photos/seed/geology/800/800', // Placeholder for history
                         status: 'completed',
-                        result: item
+                        mode: item.mode,
+                        result: item.mode === 'analysis' ? item : undefined,
+                        idResult: item.idResult
                       };
                       // This is a simplification; in a real app we'd load the image from storage
                       // For now, we'll just show the data
@@ -366,12 +419,23 @@ export default function App() {
                     }}
                     className="group p-3 rounded-xl border border-stone-800 bg-stone-900/50 hover:border-lime-700/50 cursor-pointer transition-all"
                   >
-                    <p className="text-xs font-bold text-stone-300 truncate">{item.fileName}</p>
-                    <p className="text-[10px] text-stone-500 mt-1">{new Date(item.timestamp).toLocaleDateString()}</p>
+                    <div className="flex items-center justify-between mb-1">
+                      <p className="text-xs font-bold text-stone-300 truncate max-w-[120px]">{item.fileName}</p>
+                      <span className="text-[8px] px-1.5 py-0.5 bg-stone-800 text-stone-500 rounded-full font-bold uppercase tracking-tighter">
+                        {item.mode === 'analysis' ? 'Micro' : 'Macro'}
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-stone-500">{new Date(item.timestamp).toLocaleDateString()}</p>
                     <div className="flex gap-1 mt-2">
-                      {item.components.slice(0, 3).map((c, i) => (
-                        <div key={i} className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: COLORS[i % COLORS.length] }} />
-                      ))}
+                      {item.mode === 'analysis' ? (
+                        item.components?.slice(0, 3).map((c, i) => (
+                          <div key={i} className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: COLORS[i % COLORS.length] }} />
+                        ))
+                      ) : (
+                        item.idResult?.identifications?.slice(0, 3).map((id, i) => (
+                          <div key={i} className="w-1.5 h-1.5 rounded-full bg-lime-600" />
+                        ))
+                      )}
                     </div>
                   </div>
                 ))
@@ -385,7 +449,9 @@ export default function App() {
                   <div className="w-12 h-12 rounded-full bg-stone-800 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
                     <Upload className="text-stone-500" />
                   </div>
-                  <p className="text-sm text-stone-400 font-medium">Drop photomicrographs here</p>
+                  <p className="text-sm text-stone-400 font-medium">
+                    {activeMode === 'analysis' ? 'Drop photomicrographs here' : 'Drop rock/mineral photos here'}
+                  </p>
                   <p className="text-[10px] text-stone-600 mt-1 uppercase tracking-tighter">Supports JPG, PNG, TIFF</p>
                 </div>
               ) : (
@@ -457,7 +523,7 @@ export default function App() {
                   />
                   
                   {/* Labels Overlay */}
-                  {selectedImage.status === 'completed' && selectedImage.result?.components.map((comp, idx) => (
+                  {selectedImage.status === 'completed' && selectedImage.mode === 'analysis' && selectedImage.result?.components.map((comp, idx) => (
                     comp.labelPosition && (
                       <motion.div
                         initial={{ scale: 0, opacity: 0 }}
@@ -485,10 +551,20 @@ export default function App() {
                     <div className="absolute inset-0 bg-stone-900/80 backdrop-blur-sm flex flex-col items-center justify-center text-center p-8">
                       <div className="relative">
                         <div className="w-20 h-20 border-4 border-lime-900/30 border-t-lime-500 rounded-full animate-spin" />
-                        <Microscope className="absolute inset-0 m-auto text-lime-500 w-8 h-8" />
+                        {selectedImage.mode === 'analysis' ? (
+                          <Microscope className="absolute inset-0 m-auto text-lime-500 w-8 h-8" />
+                        ) : (
+                          <Search className="absolute inset-0 m-auto text-lime-500 w-8 h-8" />
+                        )}
                       </div>
-                      <h3 className="mt-6 text-lg font-bold text-white">Analyzing Microstructure</h3>
-                      <p className="mt-2 text-sm text-stone-400 max-w-xs">Our AI is identifying minerals, calculating volumetric percentages, and mapping textures...</p>
+                      <h3 className="mt-6 text-lg font-bold text-white">
+                        {selectedImage.mode === 'analysis' ? 'Analyzing Microstructure' : 'Identifying Sample'}
+                      </h3>
+                      <p className="mt-2 text-sm text-stone-400 max-w-xs">
+                        {selectedImage.mode === 'analysis' 
+                          ? 'Our AI is identifying minerals, calculating volumetric percentages, and mapping textures...'
+                          : 'Our AI is comparing visual features against geological databases to provide ranked identifications...'}
+                      </p>
                     </div>
                   )}
 
@@ -526,109 +602,182 @@ export default function App() {
               {/* Results Panel */}
               <div className="space-y-6">
                 <AnimatePresence mode="wait">
-                  {selectedImage.status === 'completed' && selectedImage.result ? (
-                    <motion.div 
-                      initial={{ opacity: 0, y: 20 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -20 }}
-                      className="space-y-6"
-                    >
-                      {/* Summary Card */}
-                      <section className="bg-stone-800/50 border border-stone-700 rounded-3xl p-6">
-                        <div className="flex items-center gap-2 mb-4">
-                          <Info className="text-lime-500" size={18} />
-                          <h3 className="text-xs font-bold uppercase tracking-widest text-stone-400">Analysis Summary</h3>
-                        </div>
-                        <p className="text-sm leading-relaxed text-stone-300">
-                          {selectedImage.result.summary}
-                        </p>
-                        <div className="mt-4 pt-4 border-t border-stone-700/50">
-                          <p className="text-[10px] uppercase tracking-widest text-stone-500 font-bold mb-1">Geological Context</p>
-                          <p className="text-xs italic text-stone-400">{selectedImage.result.geologicalContext}</p>
-                        </div>
-                      </section>
-
-                      {/* Volumetric Breakdown */}
-                      <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div className="bg-stone-800/50 border border-stone-700 rounded-3xl p-6 flex flex-col items-center">
-                          <div className="w-full flex items-center gap-2 mb-4">
-                            <PieChartIcon className="text-lime-500" size={18} />
-                            <h3 className="text-xs font-bold uppercase tracking-widest text-stone-400">Volumetric %</h3>
-                          </div>
-                          <div className="h-48 w-full">
-                            <ResponsiveContainer width="100%" height="100%">
-                              <PieChart>
-                                <Pie
-                                  data={selectedImage.result.components}
-                                  cx="50%"
-                                  cy="50%"
-                                  innerRadius={40}
-                                  outerRadius={70}
-                                  paddingAngle={5}
-                                  dataKey="percentage"
-                                  nameKey="name"
-                                >
-                                  {selectedImage.result.components.map((entry, index) => (
-                                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} stroke="none" />
-                                  ))}
-                                </Pie>
-                                <Tooltip 
-                                  contentStyle={{ backgroundColor: '#1C1917', border: '1px solid #44403C', borderRadius: '8px', fontSize: '12px' }}
-                                  itemStyle={{ color: '#D6D3D1' }}
-                                />
-                              </PieChart>
-                            </ResponsiveContainer>
-                          </div>
-                        </div>
-
-                        <div className="bg-stone-800/50 border border-stone-700 rounded-3xl p-6">
+                  {selectedImage.status === 'completed' ? (
+                    selectedImage.mode === 'analysis' && selectedImage.result ? (
+                      <motion.div 
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -20 }}
+                        className="space-y-6"
+                      >
+                        {/* Summary Card */}
+                        <section className="bg-stone-800/50 border border-stone-700 rounded-3xl p-6">
                           <div className="flex items-center gap-2 mb-4">
-                            <Layers className="text-lime-500" size={18} />
-                            <h3 className="text-xs font-bold uppercase tracking-widest text-stone-400">Component List</h3>
+                            <Info className="text-lime-500" size={18} />
+                            <h3 className="text-xs font-bold uppercase tracking-widest text-stone-400">Analysis Summary</h3>
                           </div>
-                          <div className="space-y-3 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
-                            {selectedImage.result.components.map((comp, idx) => (
-                              <div key={idx} className="flex items-center justify-between group">
-                                <div className="flex items-center gap-2">
-                                  <div className="w-2 h-2 rounded-full" style={{ backgroundColor: COLORS[idx % COLORS.length] }} />
-                                  <span className="text-xs font-medium text-stone-300">{comp.name}</span>
-                                </div>
-                                <span className="text-xs font-bold text-lime-500">{comp.percentage}%</span>
-                              </div>
-                            ))}
+                          <p className="text-sm leading-relaxed text-stone-300">
+                            {selectedImage.result.summary}
+                          </p>
+                          <div className="mt-4 pt-4 border-t border-stone-700/50">
+                            <p className="text-[10px] uppercase tracking-widest text-stone-500 font-bold mb-1">Geological Context</p>
+                            <p className="text-xs italic text-stone-400">{selectedImage.result.geologicalContext}</p>
                           </div>
-                        </div>
-                      </section>
+                        </section>
 
-                      {/* Detailed Components */}
-                      <section className="space-y-3">
-                        <h3 className="text-xs font-bold uppercase tracking-widest text-stone-500 px-2">Detailed Identification</h3>
-                        {selectedImage.result.components.map((comp, idx) => (
-                          <motion.div 
-                            initial={{ opacity: 0, x: 20 }}
-                            animate={{ opacity: 1, x: 0 }}
-                            transition={{ delay: idx * 0.1 }}
-                            key={idx} 
-                            className="bg-stone-800/30 border border-stone-800 hover:border-stone-700 rounded-2xl p-4 transition-colors"
-                          >
-                            <div className="flex items-start justify-between mb-2">
-                              <div>
-                                <h4 className="text-sm font-bold text-white">{comp.name}</h4>
-                                <span className="text-[10px] px-2 py-0.5 bg-stone-700 text-stone-300 rounded-full font-bold uppercase tracking-tighter">
-                                  {comp.type}
-                                </span>
-                              </div>
-                              <div className="text-right">
-                                <span className="text-lg font-black text-lime-600/50">{comp.percentage}%</span>
-                              </div>
+                        {/* Volumetric Breakdown */}
+                        <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="bg-stone-800/50 border border-stone-700 rounded-3xl p-6 flex flex-col items-center">
+                            <div className="w-full flex items-center gap-2 mb-4">
+                              <PieChartIcon className="text-lime-500" size={18} />
+                              <h3 className="text-xs font-bold uppercase tracking-widest text-stone-400">Volumetric %</h3>
                             </div>
-                            <p className="text-xs text-stone-400 leading-relaxed italic">
-                              {comp.description}
-                            </p>
-                          </motion.div>
-                        ))}
-                      </section>
-                    </motion.div>
+                            <div className="h-48 w-full">
+                              <ResponsiveContainer width="100%" height="100%">
+                                <PieChart>
+                                  <Pie
+                                    data={selectedImage.result.components}
+                                    cx="50%"
+                                    cy="50%"
+                                    innerRadius={40}
+                                    outerRadius={70}
+                                    paddingAngle={5}
+                                    dataKey="percentage"
+                                    nameKey="name"
+                                  >
+                                    {selectedImage.result.components.map((entry, index) => (
+                                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} stroke="none" />
+                                    ))}
+                                  </Pie>
+                                  <Tooltip 
+                                    contentStyle={{ backgroundColor: '#1C1917', border: '1px solid #44403C', borderRadius: '8px', fontSize: '12px' }}
+                                    itemStyle={{ color: '#D6D3D1' }}
+                                  />
+                                </PieChart>
+                              </ResponsiveContainer>
+                            </div>
+                          </div>
+
+                          <div className="bg-stone-800/50 border border-stone-700 rounded-3xl p-6">
+                            <div className="flex items-center gap-2 mb-4">
+                              <Layers className="text-lime-500" size={18} />
+                              <h3 className="text-xs font-bold uppercase tracking-widest text-stone-400">Component List</h3>
+                            </div>
+                            <div className="space-y-3 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
+                              {selectedImage.result.components.map((comp, idx) => (
+                                <div key={idx} className="flex items-center justify-between group">
+                                  <div className="flex items-center gap-2">
+                                    <div className="w-2 h-2 rounded-full" style={{ backgroundColor: COLORS[idx % COLORS.length] }} />
+                                    <span className="text-xs font-medium text-stone-300">{comp.name}</span>
+                                  </div>
+                                  <span className="text-xs font-bold text-lime-500">{comp.percentage}%</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </section>
+
+                        {/* Detailed Components */}
+                        <section className="space-y-3">
+                          <h3 className="text-xs font-bold uppercase tracking-widest text-stone-500 px-2">Detailed Identification</h3>
+                          {selectedImage.result.components.map((comp, idx) => (
+                            <motion.div 
+                              initial={{ opacity: 0, x: 20 }}
+                              animate={{ opacity: 1, x: 0 }}
+                              transition={{ delay: idx * 0.1 }}
+                              key={idx} 
+                              className="bg-stone-800/30 border border-stone-800 hover:border-stone-700 rounded-2xl p-4 transition-colors"
+                            >
+                              <div className="flex items-start justify-between mb-2">
+                                <div>
+                                  <h4 className="text-sm font-bold text-white">{comp.name}</h4>
+                                  <span className="text-[10px] px-2 py-0.5 bg-stone-700 text-stone-300 rounded-full font-bold uppercase tracking-tighter">
+                                    {comp.type}
+                                  </span>
+                                </div>
+                                <div className="text-right">
+                                  <span className="text-lg font-black text-lime-600/50">{comp.percentage}%</span>
+                                </div>
+                              </div>
+                              <p className="text-xs text-stone-400 leading-relaxed italic">
+                                {comp.description}
+                              </p>
+                            </motion.div>
+                          ))}
+                        </section>
+                      </motion.div>
+                    ) : selectedImage.mode === 'identification' && selectedImage.idResult ? (
+                      <motion.div 
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -20 }}
+                        className="space-y-6"
+                      >
+                        {/* Summary Card */}
+                        <section className="bg-stone-800/50 border border-stone-700 rounded-3xl p-6">
+                          <div className="flex items-center gap-2 mb-4">
+                            <Info className="text-lime-500" size={18} />
+                            <h3 className="text-xs font-bold uppercase tracking-widest text-stone-400">Sample Summary</h3>
+                          </div>
+                          <p className="text-sm leading-relaxed text-stone-300">
+                            {selectedImage.idResult.summary}
+                          </p>
+                        </section>
+
+                        {/* Ranked Identifications */}
+                        <section className="space-y-4">
+                          <h3 className="text-xs font-bold uppercase tracking-widest text-stone-500 px-2">Probable Identifications</h3>
+                          {selectedImage.idResult.identifications.map((id, idx) => (
+                            <motion.div 
+                              initial={{ opacity: 0, x: 20 }}
+                              animate={{ opacity: 1, x: 0 }}
+                              transition={{ delay: idx * 0.1 }}
+                              key={idx} 
+                              className="bg-stone-800/30 border border-stone-800 hover:border-stone-700 rounded-2xl p-5 transition-colors group"
+                            >
+                              <div className="flex items-start justify-between mb-3">
+                                <div className="flex items-center gap-3">
+                                  <div className="w-8 h-8 rounded-full bg-stone-800 flex items-center justify-center text-stone-400 font-bold text-xs">
+                                    {idx + 1}
+                                  </div>
+                                  <div>
+                                    <h4 className="text-base font-bold text-white">{id.name}</h4>
+                                    <div className="flex items-center gap-2 mt-1">
+                                      <div className="w-24 h-1.5 bg-stone-800 rounded-full overflow-hidden">
+                                        <motion.div 
+                                          initial={{ width: 0 }}
+                                          animate={{ width: `${id.confidence}%` }}
+                                          className="h-full bg-lime-500"
+                                        />
+                                      </div>
+                                      <span className="text-[10px] font-bold text-lime-500">{id.confidence}% Confidence</span>
+                                    </div>
+                                  </div>
+                                </div>
+                                <div className="p-2 bg-lime-900/20 rounded-lg">
+                                  <Gem size={16} className="text-lime-500" />
+                                </div>
+                              </div>
+                              
+                              <p className="text-xs text-stone-300 leading-relaxed mb-4">
+                                {id.description}
+                              </p>
+
+                              <div className="space-y-2">
+                                <p className="text-[10px] uppercase tracking-widest text-stone-500 font-bold">Key Supporting Features</p>
+                                <div className="flex flex-wrap gap-2">
+                                  {id.keyFeatures.map((feature, fIdx) => (
+                                    <span key={fIdx} className="text-[10px] px-2 py-1 bg-stone-900 text-stone-400 rounded-md border border-stone-800">
+                                      {feature}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            </motion.div>
+                          ))}
+                        </section>
+                      </motion.div>
+                    ) : null
                   ) : selectedImage.status === 'error' ? (
                     <motion.div 
                       initial={{ opacity: 0 }}
@@ -689,7 +838,12 @@ export default function App() {
             <a href="#" className="text-xs text-stone-500 hover:text-stone-300 transition-colors uppercase tracking-widest font-bold">Scientific Methodology</a>
             <a href="#" className="text-xs text-stone-500 hover:text-stone-300 transition-colors uppercase tracking-widest font-bold">Privacy Policy</a>
           </div>
-          <p className="text-xs text-stone-600 font-medium">© 2026 Geological Analysis Systems. All rights reserved.</p>
+          <div className="flex flex-col items-center md:items-end gap-2">
+            <p className="text-xs text-stone-600 font-medium">© 2026 Geological Analysis Systems. All rights reserved.</p>
+            <p className="text-[10px] text-stone-500 font-bold uppercase tracking-widest flex items-center gap-2">
+              The App is proudly developed in Pakistan <span className="text-base">🇵🇰</span>
+            </p>
+          </div>
         </div>
       </footer>
 

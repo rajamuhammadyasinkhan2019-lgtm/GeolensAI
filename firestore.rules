@@ -20,9 +20,11 @@ service cloud.firestore {
     //   - userId: string (required) - UID of the owner
     //   - fileName: string (required)
     //   - timestamp: string (required, ISO 8601)
+    //   - mode: string (required, enum: ['analysis', 'identification'])
     //   - summary: string (required, max 5000 chars)
     //   - geologicalContext: string (optional, max 2000 chars)
-    //   - components: list (required, max 50 items)
+    //   - components: list (optional, max 50 items)
+    //   - idResult: map (optional)
     //
     // ===============================================================
 
@@ -68,14 +70,16 @@ service cloud.firestore {
     }
 
     function isValidAnalysis(data) {
-      return data.keys().hasAll(['userId', 'fileName', 'timestamp', 'summary', 'components']) &&
-             data.keys().hasOnly(['userId', 'fileName', 'timestamp', 'summary', 'geologicalContext', 'components']) &&
+      return data.keys().hasAll(['userId', 'fileName', 'timestamp', 'mode', 'summary']) &&
+             data.keys().hasOnly(['userId', 'fileName', 'timestamp', 'mode', 'summary', 'geologicalContext', 'components', 'idResult']) &&
              data.userId is string &&
              data.fileName is string && data.fileName.size() < 255 &&
              isValidDateString(data.timestamp) &&
+             data.mode in ['analysis', 'identification'] &&
              data.summary is string && data.summary.size() < 10000 &&
              (!('geologicalContext' in data) || (data.geologicalContext is string && data.geologicalContext.size() < 5000)) &&
-             data.components is list && data.components.size() <= 50;
+             (!('components' in data) || (data.components is list && data.components.size() <= 50)) &&
+             (!('idResult' in data) || (data.idResult is map));
     }
 
     // ===============================================================

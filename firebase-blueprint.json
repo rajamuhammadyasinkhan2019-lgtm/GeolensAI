@@ -8,8 +8,9 @@
         "userId": { "type": "string", "description": "The UID of the user who performed the analysis." },
         "fileName": { "type": "string", "description": "Original filename of the image." },
         "timestamp": { "type": "string", "format": "date-time", "description": "When the analysis was performed." },
+        "mode": { "type": "string", "enum": ["analysis", "identification"], "description": "The type of analysis performed." },
         "summary": { "type": "string", "description": "AI-generated summary of the sample." },
-        "geologicalContext": { "type": "string", "description": "AI-generated geological context." },
+        "geologicalContext": { "type": "string", "description": "AI-generated geological context (for micro analysis)." },
         "components": {
           "type": "array",
           "items": {
@@ -28,9 +29,27 @@
               }
             }
           }
+        },
+        "idResult": {
+          "type": "object",
+          "properties": {
+            "summary": { "type": "string" },
+            "identifications": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "confidence": { "type": "number" },
+                  "description": { "type": "string" },
+                  "keyFeatures": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            }
+          }
         }
       },
-      "required": ["userId", "fileName", "timestamp", "summary", "components"]
+      "required": ["userId", "fileName", "timestamp", "mode", "summary"]
     },
     "User": {
       "title": "User",
