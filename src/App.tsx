@@ -838,8 +838,11 @@ export default function App() {
             <a href="#" className="text-xs text-stone-500 hover:text-stone-300 transition-colors uppercase tracking-widest font-bold">Scientific Methodology</a>
             <a href="#" className="text-xs text-stone-500 hover:text-stone-300 transition-colors uppercase tracking-widest font-bold">Privacy Policy</a>
           </div>
-          <div className="flex flex-col items-center md:items-end gap-2">
+          <div className="flex flex-col items-center md:items-end gap-1">
             <p className="text-xs text-stone-600 font-medium">© 2026 Geological Analysis Systems. All rights reserved.</p>
+            <p className="text-[10px] text-stone-500 font-bold uppercase tracking-widest">
+              Expert APP Developer: Muhammad Yasin Khan
+            </p>
             <p className="text-[10px] text-stone-500 font-bold uppercase tracking-widest flex items-center gap-2">
               The App is proudly developed in Pakistan <span className="text-base">🇵🇰</span>
             </p>
